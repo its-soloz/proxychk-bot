@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 import aiohttp
@@ -94,9 +94,29 @@ def _protocols_to_try(p: ParsedProxy) -> list[Protocol]:
     return order
 
 
-async def _fetch_judge(session: aiohttp.ClientSession, url: str, proto: Protocol, p: ParsedProxy):
+def _request_timeout(total: int | None = None) -> aiohttp.ClientTimeout:
+    """Build a bounded timeout that fails stalled handshakes and reads quickly."""
+    total = max(1, total or config.CHECK_TIMEOUT)
+    connect = min(config.CONNECT_TIMEOUT, total)
+    read = min(config.READ_TIMEOUT, total)
+    return aiohttp.ClientTimeout(
+        total=total,
+        connect=connect,
+        sock_connect=connect,
+        sock_read=read,
+    )
+
+
+async def _fetch_judge(
+    session: aiohttp.ClientSession,
+    url: str,
+    proto: Protocol,
+    p: ParsedProxy,
+    *,
+    timeout_total: int | None = None,
+):
     """Perform one request through the proxy; return (status, json_or_text)."""
-    timeout = aiohttp.ClientTimeout(total=config.CHECK_TIMEOUT)
+    timeout = _request_timeout(timeout_total)
     if proto is Protocol.HTTP:
         proxy_url = f"http://{p.host}:{p.port}"
         auth = None
@@ -133,7 +153,13 @@ async def _detect_rotating(session: aiohttp.ClientSession, proto: Protocol, p: P
     if not first_ip:
         return False
     try:
-        status, body = await _fetch_judge(session, config.ROTATE_ECHO_URL, proto, p)
+        status, body = await _fetch_judge(
+            session,
+            config.ROTATE_ECHO_URL,
+            proto,
+            p,
+            timeout_total=config.ROTATION_TIMEOUT,
+        )
         if status != 200:
             return False
         info = _parse_ipapi(body)
@@ -196,7 +222,12 @@ async def check_all(proxies: list[ParsedProxy], progress_cb=None) -> list[CheckR
     results: list[CheckResult] = []
     lock = asyncio.Lock()
 
-    connector = aiohttp.TCPConnector(limit=0, ssl=False)
+    connector = aiohttp.TCPConnector(
+        limit=config.MAX_CONCURRENCY,
+        ssl=False,
+        ttl_dns_cache=300,
+        enable_cleanup_closed=True,
+    )
     async with aiohttp.ClientSession(connector=connector) as session:
 
         async def worker(px: ParsedProxy):

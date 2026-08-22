@@ -23,8 +23,14 @@ services:
       - key: KEEPALIVE_INTERVAL
         value: "480"
       - key: MAX_CONCURRENCY
-        value: "200"
+        value: "300"
       - key: CHECK_TIMEOUT
-        value: "12"
+        value: "7"
+      - key: CONNECT_TIMEOUT
+        value: "3"
+      - key: READ_TIMEOUT
+        value: "4"
+      - key: ROTATION_TIMEOUT
+        value: "3"
       - key: TOP_N
         value: "10"

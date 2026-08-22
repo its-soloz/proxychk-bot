@@ -47,9 +47,18 @@ All config is via environment variables (see `.env.example`):
 | `RENDER_EXTERNAL_URL` | ⚠️ | — | your public Render URL; enables self-ping |
 | `PORT` | auto | `10000` | health server port (Render sets it) |
 | `KEEPALIVE_INTERVAL` | | `480` | seconds between self-pings |
-| `MAX_CONCURRENCY` | | `200` | max simultaneous checks |
-| `CHECK_TIMEOUT` | | `12` | per-proxy timeout (s) |
+| `MAX_CONCURRENCY` | | `300` | max simultaneous checks |
+| `CHECK_TIMEOUT` | | `7` | total budget for each protocol attempt (s) |
+| `CONNECT_TIMEOUT` | | `3` | connection/handshake timeout (s) |
+| `READ_TIMEOUT` | | `4` | stalled response-read timeout (s) |
+| `ROTATION_TIMEOUT` | | `3` | second IP-echo request timeout (s) |
 | `TOP_N` | | `10` | top proxies shown per category |
+
+The defaults are tuned for large batches on Render: up to 300 proxy checks can
+run together, stalled connections fail quickly, and the lightweight rotation
+probe cannot delay a live result by more than three seconds. If your proxy list
+is known to contain unusually slow but valid servers, increase `CHECK_TIMEOUT`
+and `READ_TIMEOUT` rather than lowering `MAX_CONCURRENCY`.
 
 ## Run locally
 

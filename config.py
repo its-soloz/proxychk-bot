@@ -28,8 +28,11 @@ PORT: int = _int("PORT", 10000)
 KEEPALIVE_INTERVAL: int = _int("KEEPALIVE_INTERVAL", 480)
 
 # Checker tuning
-CHECK_TIMEOUT: int = _int("CHECK_TIMEOUT", 12)
-MAX_CONCURRENCY: int = _int("MAX_CONCURRENCY", 200)
+CHECK_TIMEOUT: int = max(1, _int("CHECK_TIMEOUT", 7))
+CONNECT_TIMEOUT: int = max(1, _int("CONNECT_TIMEOUT", 3))
+READ_TIMEOUT: int = max(1, _int("READ_TIMEOUT", 4))
+ROTATION_TIMEOUT: int = max(1, _int("ROTATION_TIMEOUT", 3))
+MAX_CONCURRENCY: int = max(1, _int("MAX_CONCURRENCY", 300))
 TOP_N: int = _int("TOP_N", 10)
 
 # Judge endpoints used to validate proxies and read the exit IP.
