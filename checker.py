@@ -25,6 +25,9 @@ from aiohttp_socks import ProxyConnector, ProxyType
 import config
 from parser import ParsedProxy
 
+_global_check_semaphore: asyncio.Semaphore | None = None
+_global_check_loop: asyncio.AbstractEventLoop | None = None
+
 
 class Protocol(str, Enum):
     HTTP = "http"
@@ -92,6 +95,16 @@ def _protocols_to_try(p: ParsedProxy) -> list[Protocol]:
     elif p.scheme_hint == "http":
         order = [Protocol.HTTP, Protocol.SOCKS5, Protocol.SOCKS4]
     return order
+
+
+def _global_check_limit() -> asyncio.Semaphore:
+    """Return the one process-wide socket budget shared by every user batch."""
+    global _global_check_loop, _global_check_semaphore
+    loop = asyncio.get_running_loop()
+    if _global_check_semaphore is None or _global_check_loop is not loop:
+        _global_check_loop = loop
+        _global_check_semaphore = asyncio.Semaphore(config.MAX_CONCURRENCY)
+    return _global_check_semaphore
 
 
 def _request_timeout(total: int | None = None) -> aiohttp.ClientTimeout:
@@ -215,15 +228,17 @@ async def check_one(session: aiohttp.ClientSession, p: ParsedProxy) -> CheckResu
 
 
 async def check_all(proxies: list[ParsedProxy], progress_cb=None) -> list[CheckResult]:
-    """Check every proxy concurrently. progress_cb(done, total) called as they finish."""
-    sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
+    """Check a batch without letting it monopolise the shared socket budget."""
+    batch_limit = min(config.BATCH_CONCURRENCY, config.MAX_CONCURRENCY)
+    batch_sem = asyncio.Semaphore(batch_limit)
+    global_sem = _global_check_limit()
     total = len(proxies)
     done = 0
     results: list[CheckResult] = []
     lock = asyncio.Lock()
 
     connector = aiohttp.TCPConnector(
-        limit=config.MAX_CONCURRENCY,
+        limit=batch_limit,
         ssl=False,
         ttl_dns_cache=300,
         enable_cleanup_closed=True,
@@ -232,8 +247,9 @@ async def check_all(proxies: list[ParsedProxy], progress_cb=None) -> list[CheckR
 
         async def worker(px: ParsedProxy):
             nonlocal done
-            async with sem:
-                res = await check_one(session, px)
+            async with batch_sem:
+                async with global_sem:
+                    res = await check_one(session, px)
             async with lock:
                 done += 1
                 results.append(res)

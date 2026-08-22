@@ -215,6 +215,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(WELCOME, parse_mode=ParseMode.HTML)
 
 
+async def cmd_addproxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Accept /addproxy followed by any supported proxy text format."""
+    await handle_message(update, context)
+
+
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("awaiting_broadcast", None)
     await update.effective_message.reply_text("Cancelled.")

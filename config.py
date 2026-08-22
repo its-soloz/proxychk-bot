@@ -33,6 +33,7 @@ CONNECT_TIMEOUT: int = max(1, _int("CONNECT_TIMEOUT", 3))
 READ_TIMEOUT: int = max(1, _int("READ_TIMEOUT", 4))
 ROTATION_TIMEOUT: int = max(1, _int("ROTATION_TIMEOUT", 3))
 MAX_CONCURRENCY: int = max(1, _int("MAX_CONCURRENCY", 300))
+BATCH_CONCURRENCY: int = max(1, _int("BATCH_CONCURRENCY", 150))
 TOP_N: int = _int("TOP_N", 10)
 
 # Judge endpoints used to validate proxies and read the exit IP.

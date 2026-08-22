@@ -24,6 +24,8 @@ services:
         value: "480"
       - key: MAX_CONCURRENCY
         value: "300"
+      - key: BATCH_CONCURRENCY
+        value: "150"
       - key: CHECK_TIMEOUT
         value: "7"
       - key: CONNECT_TIMEOUT

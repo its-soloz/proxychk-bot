@@ -48,6 +48,7 @@ All config is via environment variables (see `.env.example`):
 | `PORT` | auto | `10000` | health server port (Render sets it) |
 | `KEEPALIVE_INTERVAL` | | `480` | seconds between self-pings |
 | `MAX_CONCURRENCY` | | `300` | max simultaneous checks |
+| `BATCH_CONCURRENCY` | | `150` | max slots one user batch can use |
 | `CHECK_TIMEOUT` | | `7` | total budget for each protocol attempt (s) |
 | `CONNECT_TIMEOUT` | | `3` | connection/handshake timeout (s) |
 | `READ_TIMEOUT` | | `4` | stalled response-read timeout (s) |
@@ -55,7 +56,8 @@ All config is via environment variables (see `.env.example`):
 | `TOP_N` | | `10` | top proxies shown per category |
 
 The defaults are tuned for large batches on Render: up to 300 proxy checks can
-run together, stalled connections fail quickly, and the lightweight rotation
+run together, but one batch can use at most 150 slots so other users can start
+immediately. Stalled connections fail quickly, and the lightweight rotation
 probe cannot delay a live result by more than three seconds. If your proxy list
 is known to contain unusually slow but valid servers, increase `CHECK_TIMEOUT`
 and `READ_TIMEOUT` rather than lowering `MAX_CONCURRENCY`.

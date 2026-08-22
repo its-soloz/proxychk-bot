@@ -50,6 +50,7 @@ def build_application() -> Application:
 
     app.add_handler(CommandHandler("start", handlers.cmd_start))
     app.add_handler(CommandHandler("help", handlers.cmd_help))
+    app.add_handler(CommandHandler("addproxy", handlers.cmd_addproxy))
     app.add_handler(CommandHandler("cancel", handlers.cmd_cancel))
     app.add_handler(CommandHandler("admin", admin.open_panel))
     app.add_handler(CommandHandler("panel", admin.open_panel))
