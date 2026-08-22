@@ -15,7 +15,7 @@ import config
 from checker import CheckResult, check_all, group_and_rank
 from formatting import (
     build_category_message,
-    build_forward_message,
+    build_forward_summary,
     build_summary,
     build_txt_export,
 )
@@ -29,7 +29,8 @@ _RESULT_CATEGORIES = ("residential", "http", "socks5", "rotating")
 
 @dataclass
 class _ResultSession:
-    owner_id: int
+    owner_id: int | None
+    allowed_chat_ids: frozenset[int]
     summary: str
     groups: dict[str, list[CheckResult]]
     working: list[CheckResult]
@@ -51,10 +52,11 @@ def _prune_result_sessions(now: float | None = None) -> None:
 
 
 def _store_result_session(
-    owner_id: int,
+    owner_id: int | None,
     summary: str,
     groups: dict[str, list[CheckResult]],
     working: list[CheckResult],
+    allowed_chat_ids: set[int] | frozenset[int] | None = None,
 ) -> str:
     _prune_result_sessions()
     while len(_result_sessions) >= _RESULT_CACHE_MAX:
@@ -66,6 +68,7 @@ def _store_result_session(
     session_id = secrets.token_hex(5)
     _result_sessions[session_id] = _ResultSession(
         owner_id=owner_id,
+        allowed_chat_ids=frozenset(allowed_chat_ids or ()),
         summary=summary,
         groups=groups,
         working=working,
@@ -333,9 +336,15 @@ async def handle_result_callback(
             show_alert=True,
         )
         return
-    if query.from_user.id != session.owner_id:
+    callback_chat_id = getattr(query.message, "chat_id", None)
+    owner_allowed = (
+        session.owner_id is not None and query.from_user.id == session.owner_id
+    )
+    chat_allowed = callback_chat_id in session.allowed_chat_ids
+    if not owner_allowed and not chat_allowed:
         await query.answer(
-            "These proxy results belong to the user who started the check.",
+            "This result menu is only available to its owner or inside the chat "
+            "where it was forwarded.",
             show_alert=True,
         )
         return
@@ -386,20 +395,47 @@ async def _forward_live(context, working, source_name: str, origin_chat_id: int)
     if min_lat:
         to_send = [r for r in to_send if (r.latency_ms or 0) <= min_lat] or to_send
 
-    msg = build_forward_message(to_send, source_name)
-    if not msg:
+    groups, ranked = group_and_rank(to_send)
+    summary = build_forward_summary(ranked, source_name)
+    if not summary:
         return
 
     # to group (skip if the check already happened in that same group)
     if settings.get("forward_to_group") and config.GROUP_ID and origin_chat_id != config.GROUP_ID:
+        group_session_id = _store_result_session(
+            owner_id=None,
+            allowed_chat_ids={config.GROUP_ID},
+            summary=summary,
+            groups=groups,
+            working=ranked,
+        )
+        group_session = _result_sessions[group_session_id]
         try:
-            await context.bot.send_message(config.GROUP_ID, msg, parse_mode=ParseMode.HTML)
+            await context.bot.send_message(
+                config.GROUP_ID,
+                _result_menu_text(group_session),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_result_menu_markup(group_session_id, groups),
+            )
         except Exception:
-            pass
+            _result_sessions.pop(group_session_id, None)
 
     # to admin (skip if admin is the origin)
     if settings.get("forward_to_admin") and config.ADMIN_ID and origin_chat_id != config.ADMIN_ID:
+        admin_session_id = _store_result_session(
+            owner_id=config.ADMIN_ID,
+            allowed_chat_ids={config.ADMIN_ID},
+            summary=summary,
+            groups=groups,
+            working=ranked,
+        )
+        admin_session = _result_sessions[admin_session_id]
         try:
-            await context.bot.send_message(config.ADMIN_ID, msg, parse_mode=ParseMode.HTML)
+            await context.bot.send_message(
+                config.ADMIN_ID,
+                _result_menu_text(admin_session),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_result_menu_markup(admin_session_id, groups),
+            )
         except Exception:
-            pass
+            _result_sessions.pop(admin_session_id, None)

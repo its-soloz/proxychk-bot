@@ -4,7 +4,6 @@ from __future__ import annotations
 from html import escape
 
 from checker import CheckResult
-import config
 
 _FLAG_OFFSET = 127397  # regional indicator offset
 
@@ -86,24 +85,18 @@ def build_category_message(
     )
 
 
-def build_forward_message(working: list[CheckResult], source: str) -> str | None:
-    """Compact 'live proxies' broadcast for the group / admin."""
+def build_forward_summary(working: list[CheckResult], source: str) -> str | None:
+    """Build the summary shown above forwarded result-menu buttons."""
     if not working:
         return None
-    top = working[: config.TOP_N]
     lines = [
         f"🚀 <b>{len(working)} LIVE PROXIES</b> — via {escape(source)}",
         "━━━━━━━━━━━━━━━━━━",
+        "Forwarded proxy check results",
     ]
-    for r in top:
-        badge = _ping_badge(r.latency_ms)
-        tag = r.type_label
-        lines.append(
-            f"<code>{escape(r.as_line())}</code>\n"
-            f"   {badge} • {r.protocol.value if r.protocol else '?'} • {tag}"
-        )
-    if len(working) > len(top):
-        lines.append(f"\n…and {len(working) - len(top)} more")
+    fastest = working[0].latency_ms
+    if fastest is not None:
+        lines.append(f"⚡ Fastest: <b>{fastest}ms</b>")
     return "\n".join(lines)
 
 
