@@ -24,7 +24,14 @@ from storage import store
 
 _RESULT_TTL_SECONDS = 30 * 60
 _RESULT_CACHE_MAX = 100
-_RESULT_CATEGORIES = ("residential", "http", "socks5", "rotating")
+_RESULT_CATEGORIES = (
+    "residential",
+    "http",
+    "socks5",
+    "rotating",
+    "socks4",
+    "datacenter",
+)
 
 
 @dataclass
@@ -114,6 +121,43 @@ def _result_menu_markup(
                     f"🔄 Rotating ({len(groups.get('rotating', []))})",
                     callback_data=f"res:{session_id}:rotating",
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🗂 More: SOCKS4 / Datacenter",
+                    callback_data=f"res:{session_id}:more",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📄 Get all live proxies (.txt)",
+                    callback_data=f"res:{session_id}:all",
+                )
+            ],
+        ]
+    )
+
+
+def _more_categories_markup(
+    session_id: str, groups: dict[str, list[CheckResult]]
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"🧦 SOCKS4 ({len(groups.get('socks4', []))})",
+                    callback_data=f"res:{session_id}:socks4",
+                ),
+                InlineKeyboardButton(
+                    f"🏢 Datacenter ({len(groups.get('datacenter', []))})",
+                    callback_data=f"res:{session_id}:datacenter",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back to results",
+                    callback_data=f"res:{session_id}:menu",
+                )
             ],
             [
                 InlineKeyboardButton(
@@ -371,6 +415,18 @@ async def handle_result_callback(
             _result_menu_text(session),
             parse_mode=ParseMode.HTML,
             reply_markup=_result_menu_markup(session_id, session.groups),
+        )
+        return
+
+    if action == "more":
+        await query.answer()
+        await query.edit_message_text(
+            "🗂 <b>MORE PROXY CATEGORIES</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Choose SOCKS4 or datacenter proxies below. "
+            "Each category shows its fastest 10 live proxies.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_more_categories_markup(session_id, session.groups),
         )
         return
 
