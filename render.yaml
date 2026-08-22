@@ -1,0 +1,30 @@
+# Render blueprint — deploy the proxy checker bot as a Web Service.
+# A "Web Service" (not a Background Worker) is required so the health server
+# gets a public URL that the keep-alive pinger / UptimeRobot can hit.
+services:
+  - type: web
+    name: proxy-checker-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false          # set this in the Render dashboard (secret)
+      - key: GROUP_ID
+        value: "-1004358364327"
+      - key: ADMIN_ID
+        value: "5010778910"
+      # RENDER_EXTERNAL_URL is injected automatically by Render for web
+      # services (e.g. https://proxy-checker-bot.onrender.com) — the
+      # keep-alive self-pinger reads it. No need to set it manually.
+      - key: KEEPALIVE_INTERVAL
+        value: "480"
+      - key: MAX_CONCURRENCY
+        value: "200"
+      - key: CHECK_TIMEOUT
+        value: "12"
+      - key: TOP_N
+        value: "10"
