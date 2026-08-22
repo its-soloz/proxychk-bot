@@ -56,6 +56,9 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("ban", handlers.cmd_ban))
     app.add_handler(CommandHandler("unban", handlers.cmd_unban))
     app.add_handler(CallbackQueryHandler(admin.handle_callback, pattern=r"^adm:"))
+    app.add_handler(
+        CallbackQueryHandler(handlers.handle_result_callback, pattern=r"^res:")
+    )
     # Text or document messages → proxy checker
     app.add_handler(
         MessageHandler(

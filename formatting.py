@@ -1,6 +1,8 @@
 """Build the Telegram result messages from check results."""
 from __future__ import annotations
 
+from html import escape
+
 from checker import CheckResult
 import config
 
@@ -27,11 +29,11 @@ def _fmt_result(r: CheckResult, rank: int | None = None) -> str:
     prefix = f"{rank}. " if rank else ""
     flag = _flag(r.country_code)
     loc = " ".join(x for x in [flag, r.country, r.city] if x)
-    line = f"{prefix}<code>{r.as_line()}</code>\n     {_ping_badge(r.latency_ms)}"
+    line = f"{prefix}<code>{escape(r.as_line())}</code>\n     {_ping_badge(r.latency_ms)}"
     if loc:
-        line += f"  •  {loc}"
+        line += f"  •  {escape(loc)}"
     if r.isp:
-        line += f"\n     🏷 {r.isp}"
+        line += f"\n     🏷 {escape(r.isp)}"
     return line
 
 
@@ -62,19 +64,26 @@ def build_summary(total: int, working: list[CheckResult], elapsed: float) -> str
     return "\n".join(lines)
 
 
-def build_category_messages(groups: dict[str, list[CheckResult]]) -> list[str]:
-    """One message per non-empty category, top-N each, sorted by ping."""
-    msgs: list[str] = []
-    top_n = config.TOP_N
-    for key, title in _CATEGORY_TITLES.items():
-        items = groups.get(key, [])
-        if not items:
-            continue
-        shown = items[:top_n]
-        header = f"{title}  —  <b>{len(items)}</b> live (top {len(shown)} by ping)"
-        body = "\n".join(_fmt_result(r, i + 1) for i, r in enumerate(shown))
-        msgs.append(f"{header}\n━━━━━━━━━━━━━━━━━━\n{body}")
-    return msgs
+def build_category_message(
+    category: str, items: list[CheckResult], top_n: int = 10
+) -> str:
+    """Build one latency-ranked category view for an inline result button."""
+    title = _CATEGORY_TITLES.get(category, category.upper())
+    shown = items[:top_n]
+    header = f"{title}  —  <b>{len(items)}</b> live"
+    if not shown:
+        return (
+            f"{header}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "No live proxies were found in this category."
+        )
+    body = "\n".join(_fmt_result(r, i + 1) for i, r in enumerate(shown))
+    return (
+        f"{header}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Top {len(shown)} by ping</b>\n\n"
+        f"{body}"
+    )
 
 
 def build_forward_message(working: list[CheckResult], source: str) -> str | None:
@@ -82,11 +91,17 @@ def build_forward_message(working: list[CheckResult], source: str) -> str | None
     if not working:
         return None
     top = working[: config.TOP_N]
-    lines = [f"🚀 <b>{len(working)} LIVE PROXIES</b> — via {source}", "━━━━━━━━━━━━━━━━━━"]
+    lines = [
+        f"🚀 <b>{len(working)} LIVE PROXIES</b> — via {escape(source)}",
+        "━━━━━━━━━━━━━━━━━━",
+    ]
     for r in top:
         badge = _ping_badge(r.latency_ms)
         tag = r.type_label
-        lines.append(f"<code>{r.as_line()}</code>\n   {badge} • {r.protocol.value if r.protocol else '?'} • {tag}")
+        lines.append(
+            f"<code>{escape(r.as_line())}</code>\n"
+            f"   {badge} • {r.protocol.value if r.protocol else '?'} • {tag}"
+        )
     if len(working) > len(top):
         lines.append(f"\n…and {len(working) - len(top)} more")
     return "\n".join(lines)
