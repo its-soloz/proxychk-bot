@@ -161,25 +161,35 @@ def _parse_ipapi(body: str) -> dict:
     return {}
 
 
-async def _detect_rotating(session: aiohttp.ClientSession, proto: Protocol, p: ParsedProxy, first_ip: str | None) -> bool:
-    """Hit a fast IP-echo endpoint again; different exit IP => rotating."""
-    if not first_ip:
-        return False
-    try:
-        status, body = await _fetch_judge(
-            session,
-            config.ROTATE_ECHO_URL,
-            proto,
-            p,
-            timeout_total=config.ROTATION_TIMEOUT,
-        )
+async def _detect_rotating(session: aiohttp.ClientSession, proto: Protocol, p: ParsedProxy) -> bool:
+    """Sample the SAME IP-echo endpoint twice; a changed exit IP => rotating.
+
+    Both samples come from one endpoint (ROTATE_ECHO_URL) so we never mistake
+    two judges that report the address differently (e.g. ip-api vs ipify, or an
+    IPv4/IPv6 split) for real rotation. Rotation is only reported when both
+    probes return a valid IP and those IPs actually differ; any failure,
+    non-200, or missing IP is treated as "not rotating" so a flaky second
+    request can't produce a false positive.
+    """
+    seen: list[str] = []
+    for _ in range(2):
+        try:
+            status, body = await _fetch_judge(
+                session,
+                config.ROTATE_ECHO_URL,
+                proto,
+                p,
+                timeout_total=config.ROTATION_TIMEOUT,
+            )
+        except Exception:
+            return False
         if status != 200:
             return False
-        info = _parse_ipapi(body)
-        second_ip = info.get("query")
-        return bool(second_ip and second_ip != first_ip)
-    except Exception:
-        return False
+        ip = _parse_ipapi(body).get("query")
+        if not ip:
+            return False
+        seen.append(ip)
+    return seen[0] != seen[1]
 
 
 async def check_one(session: aiohttp.ClientSession, p: ParsedProxy) -> CheckResult:
@@ -221,7 +231,7 @@ async def check_one(session: aiohttp.ClientSession, p: ParsedProxy) -> CheckResu
             result.is_datacenter = any(k in blob for k in dc_kw)
             result.is_residential = not result.is_datacenter and bool(result.exit_ip)
 
-        result.is_rotating = await _detect_rotating(session, proto, p, result.exit_ip)
+        result.is_rotating = await _detect_rotating(session, proto, p)
         return result
 
     return result  # never worked

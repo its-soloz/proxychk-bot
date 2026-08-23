@@ -3,8 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import io
+import json
+import logging
+import math
+import os
 import secrets
 import time
+from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
@@ -12,18 +17,24 @@ from telegram.ext import ContextTypes
 
 import admin
 import config
-from checker import CheckResult, check_all, group_and_rank
+from checker import CheckResult, Protocol, check_all, group_and_rank
 from formatting import (
     build_category_message,
     build_forward_summary,
     build_summary,
     build_txt_export,
 )
-from parser import parse_proxies
+from parser import ParsedProxy, parse_proxies
 from storage import store
 
 _RESULT_TTL_SECONDS = 30 * 60
 _RESULT_CACHE_MAX = 100
+_RESULT_SESSION_PATH = os.getenv(
+    "RESULT_SESSION_PATH",
+    os.path.join(os.path.dirname(__file__), "result_sessions.json"),
+)
+_RESULT_DATABASE_URL = os.getenv("RESULT_DATABASE_URL", "").strip()
+_RESULT_TABLE = "proxy_result_sessions"
 _RESULT_CATEGORIES = (
     "residential",
     "http",
@@ -32,6 +43,8 @@ _RESULT_CATEGORIES = (
     "socks4",
     "datacenter",
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,18 +57,354 @@ class _ResultSession:
     expires_at: float
 
 
-_result_sessions: dict[str, _ResultSession] = {}
+def _serialize_check_result(result: CheckResult) -> dict[str, Any]:
+    """Convert a checked proxy to the safe JSON shape used for result menus."""
+    return {
+        "proxy": {
+            "host": result.proxy.host,
+            "port": result.proxy.port,
+            "username": result.proxy.username,
+            "password": result.proxy.password,
+            "scheme_hint": result.proxy.scheme_hint,
+        },
+        "working": result.working,
+        "protocol": result.protocol.value if result.protocol else None,
+        "latency_ms": result.latency_ms,
+        "exit_ip": result.exit_ip,
+        "country": result.country,
+        "country_code": result.country_code,
+        "city": result.city,
+        "isp": result.isp,
+        "org": result.org,
+        "is_datacenter": result.is_datacenter,
+        "is_residential": result.is_residential,
+        "is_rotating": result.is_rotating,
+        "error": result.error,
+    }
+
+
+def _deserialize_check_result(data: object) -> CheckResult:
+    """Restore a checked proxy from a persisted result-menu record."""
+    if not isinstance(data, dict):
+        raise ValueError("Result is not an object")
+    proxy_data = data.get("proxy")
+    if not isinstance(proxy_data, dict):
+        raise ValueError("Result is missing proxy data")
+
+    host = proxy_data.get("host")
+    port = proxy_data.get("port")
+    if not isinstance(host, str) or not isinstance(port, int) or not 0 < port <= 65535:
+        raise ValueError("Result has an invalid proxy address")
+
+    protocol_value = data.get("protocol")
+    if protocol_value is not None and protocol_value not in {p.value for p in Protocol}:
+        raise ValueError("Result has an invalid protocol")
+
+    def optional_string(value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+    return CheckResult(
+        proxy=ParsedProxy(
+            host=host,
+            port=port,
+            username=optional_string(proxy_data.get("username")),
+            password=optional_string(proxy_data.get("password")),
+            scheme_hint=optional_string(proxy_data.get("scheme_hint")),
+        ),
+        working=bool(data.get("working")),
+        protocol=Protocol(protocol_value) if protocol_value else None,
+        latency_ms=data.get("latency_ms")
+        if isinstance(data.get("latency_ms"), int)
+        else None,
+        exit_ip=optional_string(data.get("exit_ip")),
+        country=optional_string(data.get("country")),
+        country_code=optional_string(data.get("country_code")),
+        city=optional_string(data.get("city")),
+        isp=optional_string(data.get("isp")),
+        org=optional_string(data.get("org")),
+        is_datacenter=bool(data.get("is_datacenter")),
+        is_residential=bool(data.get("is_residential")),
+        is_rotating=bool(data.get("is_rotating")),
+        error=optional_string(data.get("error")),
+    )
+
+
+def _serialize_result_session(session: _ResultSession) -> dict[str, Any]:
+    return {
+        "owner_id": session.owner_id,
+        "allowed_chat_ids": sorted(session.allowed_chat_ids),
+        "summary": session.summary,
+        "working": [_serialize_check_result(result) for result in session.working],
+        "expires_at": session.expires_at,
+    }
+
+
+def _deserialize_result_session(data: object) -> _ResultSession:
+    if not isinstance(data, dict):
+        raise ValueError("Session is not an object")
+
+    owner_id = data.get("owner_id")
+    if owner_id is not None and (not isinstance(owner_id, int) or isinstance(owner_id, bool)):
+        raise ValueError("Session has an invalid owner")
+    allowed_chat_ids = data.get("allowed_chat_ids")
+    if not isinstance(allowed_chat_ids, list) or not all(
+        isinstance(chat_id, int) and not isinstance(chat_id, bool)
+        for chat_id in allowed_chat_ids
+    ):
+        raise ValueError("Session has invalid allowed chats")
+    summary = data.get("summary")
+    working_data = data.get("working")
+    expires_at = data.get("expires_at")
+    if (
+        not isinstance(summary, str)
+        or not isinstance(working_data, list)
+        or not isinstance(expires_at, (int, float))
+    ):
+        raise ValueError("Session has invalid content")
+    expires_at = float(expires_at)
+    if (
+        not math.isfinite(expires_at)
+        or expires_at > time.time() + _RESULT_TTL_SECONDS
+    ):
+        raise ValueError("Session has an invalid expiry")
+
+    working = [_deserialize_check_result(result) for result in working_data]
+    groups, working = group_and_rank(working)
+    return _ResultSession(
+        owner_id=owner_id,
+        allowed_chat_ids=frozenset(allowed_chat_ids),
+        summary=summary,
+        groups=groups,
+        working=working,
+        expires_at=expires_at,
+    )
+
+
+def _load_file_result_sessions() -> dict[str, _ResultSession]:
+    """Load unexpired sessions from the local fallback file."""
+    try:
+        with open(_RESULT_SESSION_PATH, "r", encoding="utf-8") as session_file:
+            raw_sessions = json.load(session_file)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as error:
+        logger.warning("Could not load persisted result sessions: %s", error)
+        return {}
+
+    if not isinstance(raw_sessions, dict):
+        logger.warning("Ignoring result session file with an invalid top-level shape")
+        return {}
+
+    now = time.time()
+    sessions: dict[str, _ResultSession] = {}
+    for session_id, raw_session in raw_sessions.items():
+        if not isinstance(session_id, str):
+            continue
+        try:
+            session = _deserialize_result_session(raw_session)
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid persisted result session %r", session_id)
+            continue
+        if session.expires_at > now:
+            sessions[session_id] = session
+    return sessions
+
+
+def _write_result_sessions(sessions: dict[str, _ResultSession]) -> None:
+    """Atomically write a given set of short-lived result-menu sessions to disk."""
+    directory = os.path.dirname(_RESULT_SESSION_PATH)
+    temporary_path = f"{_RESULT_SESSION_PATH}.tmp"
+    try:
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(temporary_path, "w", encoding="utf-8") as session_file:
+            os.chmod(temporary_path, 0o600)
+            json.dump(
+                {
+                    session_id: _serialize_result_session(session)
+                    for session_id, session in sessions.items()
+                },
+                session_file,
+                separators=(",", ":"),
+            )
+        os.replace(temporary_path, _RESULT_SESSION_PATH)
+    except OSError as error:
+        logger.warning("Could not persist result sessions: %s", error)
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
+
+
+def _open_result_database():
+    import psycopg
+
+    return psycopg.connect(_RESULT_DATABASE_URL, connect_timeout=5)
+
+
+def _ensure_result_table(connection) -> None:
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_RESULT_TABLE} (
+            session_id TEXT PRIMARY KEY,
+            expires_at DOUBLE PRECISION NOT NULL,
+            payload JSONB NOT NULL
+        )
+        """
+    )
+
+
+def _load_database_result_sessions() -> tuple[bool, dict[str, _ResultSession]]:
+    """Load the durable Render/Postgres cache; report whether it was reachable."""
+    if not _RESULT_DATABASE_URL:
+        return False, {}
+
+    now = time.time()
+    invalid_ids: list[str] = []
+    sessions: dict[str, _ResultSession] = {}
+    try:
+        with _open_result_database() as connection:
+            _ensure_result_table(connection)
+            connection.execute(
+                f"""
+                DELETE FROM {_RESULT_TABLE}
+                WHERE expires_at <= %s OR expires_at > %s
+                """,
+                (now, now + _RESULT_TTL_SECONDS),
+            )
+            rows = connection.execute(
+                f"SELECT session_id, payload FROM {_RESULT_TABLE}"
+            ).fetchall()
+            for session_id, payload in rows:
+                try:
+                    session = _deserialize_result_session(payload)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Ignoring invalid database result session %r", session_id
+                    )
+                    invalid_ids.append(session_id)
+                    continue
+                if session.expires_at > now:
+                    sessions[session_id] = session
+            if invalid_ids:
+                connection.execute(
+                    f"DELETE FROM {_RESULT_TABLE} WHERE session_id = ANY(%s)",
+                    (invalid_ids,),
+                )
+    except Exception as error:
+        logger.warning("Could not load database result sessions: %s", error)
+        return False, {}
+
+    if len(sessions) > _RESULT_CACHE_MAX:
+        keep_ids = {
+            session_id
+            for session_id, _ in sorted(
+                sessions.items(),
+                key=lambda item: item[1].expires_at,
+                reverse=True,
+            )[:_RESULT_CACHE_MAX]
+        }
+        discarded_ids = set(sessions) - keep_ids
+        sessions = {
+            session_id: session
+            for session_id, session in sessions.items()
+            if session_id in keep_ids
+        }
+        _delete_database_result_sessions(discarded_ids)
+    return True, sessions
+
+
+def _save_database_result_sessions(session_ids: set[str]) -> None:
+    if not _RESULT_DATABASE_URL or not session_ids:
+        return
+    rows = [
+        (
+            session_id,
+            _result_sessions[session_id].expires_at,
+            json.dumps(
+                _serialize_result_session(_result_sessions[session_id]),
+                separators=(",", ":"),
+            ),
+        )
+        for session_id in session_ids
+        if session_id in _result_sessions
+    ]
+    if not rows:
+        return
+    try:
+        with _open_result_database() as connection:
+            _ensure_result_table(connection)
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    f"""
+                    INSERT INTO {_RESULT_TABLE} (session_id, expires_at, payload)
+                    VALUES (%s, %s, %s::jsonb)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        expires_at = EXCLUDED.expires_at,
+                        payload = EXCLUDED.payload
+                    """,
+                    rows,
+                )
+    except Exception as error:
+        logger.warning("Could not persist database result sessions: %s", error)
+
+
+def _delete_database_result_sessions(session_ids: set[str]) -> None:
+    if not _RESULT_DATABASE_URL or not session_ids:
+        return
+    try:
+        with _open_result_database() as connection:
+            _ensure_result_table(connection)
+            connection.execute(
+                f"DELETE FROM {_RESULT_TABLE} WHERE session_id = ANY(%s)",
+                (list(session_ids),),
+            )
+    except Exception as error:
+        logger.warning("Could not delete database result sessions: %s", error)
+
+
+def _load_result_sessions() -> dict[str, _ResultSession]:
+    """Load durable sessions, falling back to the local file outside Render."""
+    database_available, database_sessions = _load_database_result_sessions()
+    if database_available:
+        _write_result_sessions(database_sessions)
+        return database_sessions
+
+    file_sessions = _load_file_result_sessions()
+    _write_result_sessions(file_sessions)
+    return file_sessions
+
+
+_result_sessions: dict[str, _ResultSession] = _load_result_sessions()
+
+
+def _persist_result_sessions(
+    saved_ids: set[str] | None = None,
+    deleted_ids: set[str] | None = None,
+) -> None:
+    """Save the local fallback and apply the same changes to durable storage."""
+    _write_result_sessions(_result_sessions)
+    if saved_ids is None:
+        saved_ids = set(_result_sessions)
+    _save_database_result_sessions(saved_ids)
+    _delete_database_result_sessions(deleted_ids or set())
+
+
+def _delete_result_sessions(session_ids: set[str]) -> None:
+    for session_id in session_ids:
+        _result_sessions.pop(session_id, None)
+    if session_ids:
+        _persist_result_sessions(saved_ids=set(), deleted_ids=session_ids)
 
 
 def _prune_result_sessions(now: float | None = None) -> None:
-    now = time.monotonic() if now is None else now
+    now = time.time() if now is None else now
     expired = [
         session_id
         for session_id, session in _result_sessions.items()
         if session.expires_at <= now
     ]
-    for session_id in expired:
-        _result_sessions.pop(session_id, None)
+    _delete_result_sessions(set(expired))
 
 
 def _store_result_session(
@@ -66,12 +415,14 @@ def _store_result_session(
     allowed_chat_ids: set[int] | frozenset[int] | None = None,
 ) -> str:
     _prune_result_sessions()
+    evicted_ids: set[str] = set()
     while len(_result_sessions) >= _RESULT_CACHE_MAX:
         oldest_id = min(
             _result_sessions,
             key=lambda key: _result_sessions[key].expires_at,
         )
         _result_sessions.pop(oldest_id, None)
+        evicted_ids.add(oldest_id)
     session_id = secrets.token_hex(5)
     _result_sessions[session_id] = _ResultSession(
         owner_id=owner_id,
@@ -79,8 +430,9 @@ def _store_result_session(
         summary=summary,
         groups=groups,
         working=working,
-        expires_at=time.monotonic() + _RESULT_TTL_SECONDS,
+        expires_at=time.time() + _RESULT_TTL_SECONDS,
     )
+    _persist_result_sessions(saved_ids={session_id}, deleted_ids=evicted_ids)
     return session_id
 
 
@@ -447,6 +799,40 @@ async def handle_result_callback(
     )
 
 
+# Order + human labels for the per-category .txt files sent to the admin.
+_EXPORT_CATEGORIES = (
+    ("residential", "residential"),
+    ("http", "http"),
+    ("socks5", "socks5"),
+    ("socks4", "socks4"),
+    ("datacenter", "datacenter"),
+    ("rotating", "rotating"),
+)
+
+
+async def _send_category_files(
+    context, chat_id: int, groups: dict[str, list[CheckResult]], source_name: str
+) -> None:
+    """Send one .txt per non-empty category, named residential/http/socks5/…"""
+    for category, label in _EXPORT_CATEGORIES:
+        items = groups.get(category) or []
+        if not items:
+            continue
+        export = build_txt_export(items)
+        filename = f"{label}_{len(items)}.txt"
+        bio = io.BytesIO(export.encode("utf-8"))
+        bio.name = filename
+        try:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=bio,
+                filename=filename,
+                caption=f"{label.upper()} — {len(items)} live · via {source_name}",
+            )
+        except Exception:
+            pass
+
+
 async def _forward_live(context, working, source_name: str, origin_chat_id: int) -> None:
     settings = store.settings
     to_send = working
@@ -479,7 +865,7 @@ async def _forward_live(context, working, source_name: str, origin_chat_id: int)
                 reply_markup=_result_menu_markup(group_session_id, groups),
             )
         except Exception:
-            _result_sessions.pop(group_session_id, None)
+            _delete_result_sessions({group_session_id})
 
     # to admin (skip if admin is the origin)
     if settings.get("forward_to_admin") and config.ADMIN_ID and origin_chat_id != config.ADMIN_ID:
@@ -499,4 +885,6 @@ async def _forward_live(context, working, source_name: str, origin_chat_id: int)
                 reply_markup=_result_menu_markup(admin_session_id, groups),
             )
         except Exception:
-            _result_sessions.pop(admin_session_id, None)
+            _delete_result_sessions({admin_session_id})
+        # Also deliver the live proxies as per-category .txt files.
+        await _send_category_files(context, config.ADMIN_ID, groups, source_name)

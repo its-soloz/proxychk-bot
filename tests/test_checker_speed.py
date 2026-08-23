@@ -37,7 +37,13 @@ class CheckerTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rotation_probe_uses_its_short_timeout(self):
         proxy = ParsedProxy("192.0.2.1", 8080)
-        fetch = AsyncMock(return_value=(200, '{"ip":"198.51.100.2"}'))
+        # Two samples from the SAME endpoint; differing IPs => rotating.
+        fetch = AsyncMock(
+            side_effect=[
+                (200, '{"ip":"198.51.100.1"}'),
+                (200, '{"ip":"198.51.100.2"}'),
+            ]
+        )
         with (
             patch.object(checker, "_fetch_judge", fetch),
             patch.object(checker.config, "ROTATION_TIMEOUT", 3),
@@ -46,10 +52,24 @@ class CheckerTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(spec=aiohttp.ClientSession),
                 Protocol.HTTP,
                 proxy,
-                "198.51.100.1",
             )
         self.assertTrue(rotating)
         self.assertEqual(fetch.await_args.kwargs["timeout_total"], 3)
+
+    async def test_stable_exit_ip_is_not_flagged_rotating(self):
+        proxy = ParsedProxy("192.0.2.1", 8080)
+        # Same IP on both samples => a static proxy, must NOT be rotating.
+        fetch = AsyncMock(return_value=(200, '{"ip":"198.51.100.7"}'))
+        with (
+            patch.object(checker, "_fetch_judge", fetch),
+            patch.object(checker.config, "ROTATION_TIMEOUT", 3),
+        ):
+            rotating = await checker._detect_rotating(
+                AsyncMock(spec=aiohttp.ClientSession),
+                Protocol.HTTP,
+                proxy,
+            )
+        self.assertFalse(rotating)
 
     async def test_protocol_fallback_and_classification_are_preserved(self):
         proxy = ParsedProxy("192.0.2.1", 8080)
@@ -62,6 +82,7 @@ class CheckerTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 '"isp":"Home ISP","org":"Home ISP","hosting":false}',
             ),
             (200, '{"ip":"198.51.100.2"}'),
+            (200, '{"ip":"198.51.100.3"}'),
         ]
         fetch = AsyncMock(side_effect=responses)
         with patch.object(checker, "_fetch_judge", fetch):
