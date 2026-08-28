@@ -13,10 +13,22 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false          # set this in the Render dashboard (secret)
+      - key: RESULT_DATABASE_URL
+        fromDatabase:
+          name: proxy-checker-sessions
+          property: connectionString
       - key: GROUP_ID
         value: "-1004358364327"
       - key: ADMIN_ID
         value: "5010778910"
+      - key: LIFETIME_DB_PATH
+        value: "lifetime_proxies.sqlite3"
+      - key: DAILY_LOG_HOUR
+        value: "21"
+      - key: DAILY_LOG_MINUTE
+        value: "0"
+      - key: DAILY_LOG_TIMEZONE
+        value: "Asia/Kolkata"
       # RENDER_EXTERNAL_URL is injected automatically by Render for web
       # services (e.g. https://proxy-checker-bot.onrender.com) — the
       # keep-alive self-pinger reads it. No need to set it manually.
@@ -36,3 +48,9 @@ services:
         value: "3"
       - key: TOP_N
         value: "10"
+
+databases:
+  - name: proxy-checker-sessions
+    plan: free
+    databaseName: proxy_checker
+    user: proxy_checker

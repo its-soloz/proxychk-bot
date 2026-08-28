@@ -16,6 +16,7 @@ from telegram.ext import (
 import admin
 import config
 import handlers
+from daily_scheduler import launch_daily_scheduler
 from keepalive import launch_keepalive_tasks, start_web_server
 
 logging.basicConfig(
@@ -29,6 +30,7 @@ async def _post_init(app: Application) -> None:
     """Runs once after the bot starts: launch web server + keep-alive."""
     await start_web_server()
     launch_keepalive_tasks()
+    launch_daily_scheduler(app.bot)
     try:
         await app.bot.send_message(
             config.ADMIN_ID,

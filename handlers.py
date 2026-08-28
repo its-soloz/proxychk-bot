@@ -1,6 +1,7 @@
 """Core Telegram command & message handlers for the proxy checker."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import io
 import json
@@ -18,6 +19,7 @@ from telegram.ext import ContextTypes
 import admin
 import config
 from checker import CheckResult, Protocol, check_all, group_and_rank
+from delivery import send_logs_album
 from formatting import (
     build_category_message,
     build_forward_summary,
@@ -25,6 +27,7 @@ from formatting import (
     build_txt_export,
 )
 from parser import ParsedProxy, parse_proxies
+from lifetime_store import lifetime_store
 from storage import store
 
 _RESULT_TTL_SECONDS = 30 * 60
@@ -713,8 +716,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not working:
         return
 
-    # Forward live proxies to group + admin
-    await _forward_live(context, working, user.full_name, origin_chat_id=chat_id)
+    # Deliver logs first, then persist the completed working batch in one
+    # SQLite transaction (never one write per proxy).
+    logs_delivered = await _forward_live(
+        context,
+        working,
+        user.full_name,
+        origin_chat_id=chat_id,
+        total_checked=len(proxies),
+    )
+    if logs_delivered:
+        try:
+            await asyncio.to_thread(lifetime_store.add_working, working)
+        except Exception as error:
+            logger.warning("Could not save lifetime working proxies: %s", error)
 
 
 async def handle_result_callback(
@@ -732,10 +747,9 @@ async def handle_result_callback(
     _, session_id, action = parts
     session = _get_result_session(session_id)
     if session is None:
-        await query.answer(
-            "These results expired. Send the proxies again to create a new result.",
-            show_alert=True,
-        )
+        # Silently stop Telegram's callback spinner. Never show an expiration
+        # alert (or its platform-supplied OK button) to the user.
+        await query.answer()
         return
     callback_chat_id = getattr(query.message, "chat_id", None)
     owner_allowed = (
@@ -833,8 +847,34 @@ async def _send_category_files(
             pass
 
 
-async def _forward_live(context, working, source_name: str, origin_chat_id: int) -> None:
+async def _forward_live(
+    context,
+    working,
+    source_name: str,
+    origin_chat_id: int,
+    total_checked: int,
+) -> bool:
     settings = store.settings
+    full_groups, full_ranked = group_and_rank(working)
+
+    # The logs album always represents the complete check. Admin forwarding
+    # filters must never turn known-live proxies into apparent dead results.
+    logs_delivered = True
+    if settings.get("forward_to_group") and config.GROUP_ID:
+        try:
+            await send_logs_album(
+                context.bot,
+                config.GROUP_ID,
+                source_name,
+                total_checked,
+                full_ranked,
+                full_groups,
+            )
+        except Exception as error:
+            logs_delivered = False
+            logger.warning("Could not send proxy album to logs group: %s", error)
+
+    # Keep the existing residential/latency filters for admin forwarding only.
     to_send = working
     if settings.get("only_forward_residential"):
         to_send = [r for r in working if r.is_residential] or working
@@ -845,27 +885,7 @@ async def _forward_live(context, working, source_name: str, origin_chat_id: int)
     groups, ranked = group_and_rank(to_send)
     summary = build_forward_summary(ranked, source_name)
     if not summary:
-        return
-
-    # to group (skip if the check already happened in that same group)
-    if settings.get("forward_to_group") and config.GROUP_ID and origin_chat_id != config.GROUP_ID:
-        group_session_id = _store_result_session(
-            owner_id=None,
-            allowed_chat_ids={config.GROUP_ID},
-            summary=summary,
-            groups=groups,
-            working=ranked,
-        )
-        group_session = _result_sessions[group_session_id]
-        try:
-            await context.bot.send_message(
-                config.GROUP_ID,
-                _result_menu_text(group_session),
-                parse_mode=ParseMode.HTML,
-                reply_markup=_result_menu_markup(group_session_id, groups),
-            )
-        except Exception:
-            _delete_result_sessions({group_session_id})
+        return logs_delivered
 
     # to admin (skip if admin is the origin)
     if settings.get("forward_to_admin") and config.ADMIN_ID and origin_chat_id != config.ADMIN_ID:
@@ -888,3 +908,4 @@ async def _forward_live(context, working, source_name: str, origin_chat_id: int)
             _delete_result_sessions({admin_session_id})
         # Also deliver the live proxies as per-category .txt files.
         await _send_category_files(context, config.ADMIN_ID, groups, source_name)
+    return logs_delivered

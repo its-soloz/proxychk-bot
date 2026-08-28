@@ -30,9 +30,13 @@ class FakeQuery:
 class FakeBot:
     def __init__(self):
         self.documents: list[dict] = []
+        self.media_groups: list[dict] = []
 
     async def send_document(self, **kwargs):
         self.documents.append(kwargs)
+
+    async def send_media_group(self, **kwargs):
+        self.media_groups.append(kwargs)
 
 
 class FakeDatabaseResult:
@@ -293,6 +297,14 @@ class ResultMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(document_call["chat_id"], -100123)
         exported = document_call["document"].getvalue().decode("utf-8")
         self.assertEqual(len(exported.splitlines()), len(self.results))
+
+    async def test_missing_session_callback_is_silently_acknowledged(self):
+        query = FakeQuery("res:missing:http", 42, 500)
+        await handlers.handle_result_callback(
+            SimpleNamespace(callback_query=query), self.context
+        )
+        self.assertEqual(query.answers, [(None, False)])
+        self.assertFalse(query.edits)
 
     async def test_persisted_sessions_work_after_restart_for_each_destination(self):
         sender_session = handlers._store_result_session(

@@ -4,3 +4,9 @@ __pycache__/
 .env
 state.json
 state.json.tmp
+result_sessions.json
+result_sessions.json.tmp
+lifetime_proxies.sqlite3
+lifetime_proxies.sqlite3-journal
+lifetime_proxies.sqlite3-shm
+lifetime_proxies.sqlite3-wal

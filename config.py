@@ -22,6 +22,17 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
 GROUP_ID: int = _int("GROUP_ID", -1004358364327)
 ADMIN_ID: int = _int("ADMIN_ID", 5010778910)
 
+# Lifetime working-proxy database + daily recheck schedule
+LIFETIME_DB_PATH: str = os.getenv(
+    "LIFETIME_DB_PATH",
+    os.path.join(os.path.dirname(__file__), "lifetime_proxies.sqlite3"),
+).strip()
+DAILY_LOG_HOUR: int = min(23, max(0, _int("DAILY_LOG_HOUR", 21)))
+DAILY_LOG_MINUTE: int = min(59, max(0, _int("DAILY_LOG_MINUTE", 0)))
+DAILY_LOG_TIMEZONE: str = os.getenv(
+    "DAILY_LOG_TIMEZONE", "Asia/Kolkata"
+).strip() or "Asia/Kolkata"
+
 # Keep-alive / web server
 RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 PORT: int = _int("PORT", 10000)

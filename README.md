@@ -18,7 +18,14 @@ them, then forwards the live ones to your group and to the admin.
 - **Grouped, ranked results** — separate sections for SOCKS5, SOCKS4, HTTP,
   residential, datacenter, and rotating; **fastest ping first**; top proxies
   highlighted; full `.txt` export attached.
+- **Restart-safe result menus** — recent inline-button sessions are kept in
+  Render Postgres for 30 minutes, so a web-service restart does not break them.
 - **Auto-forwarding** — live proxies pushed to your group and admin DM.
+- **Single-message logs albums** — the logs group receives named residential,
+  datacenter, HTTP, SOCKS4, SOCKS5, and rotating files plus
+  `all_working_proxies.txt` in one Telegram document album.
+- **Lifetime hits** — unique working proxies are stored in local SQLite after a
+  completed delivery, then rechecked and trimmed daily at 9:00 PM Delhi time.
 - **Advanced admin panel** (`/admin`) — inline-keyboard control: stats, user
   leaderboard, toggle forwarding (group / admin / residential-only), broadcast
   to all users, ban/unban, and live health.
@@ -42,8 +49,13 @@ All config is via environment variables (see `.env.example`):
 | Var | Required | Default | Notes |
 | --- | --- | --- | --- |
 | `BOT_TOKEN` | ✅ | — | from @BotFather |
+| `RESULT_DATABASE_URL` | Render | — | injected by the Blueprint for result sessions |
 | `GROUP_ID` | ✅ | `-1004358364327` | forward target group |
 | `ADMIN_ID` | ✅ | `5010778910` | admin user id |
+| `LIFETIME_DB_PATH` | | `lifetime_proxies.sqlite3` | local SQLite lifetime-hit database |
+| `DAILY_LOG_HOUR` | | `21` | daily recheck hour (24-hour clock) |
+| `DAILY_LOG_MINUTE` | | `0` | daily recheck minute |
+| `DAILY_LOG_TIMEZONE` | | `Asia/Kolkata` | IANA timezone for the daily run |
 | `RENDER_EXTERNAL_URL` | ⚠️ | — | your public Render URL; enables self-ping |
 | `PORT` | auto | `10000` | health server port (Render sets it) |
 | `KEEPALIVE_INTERVAL` | | `480` | seconds between self-pings |
@@ -80,9 +92,14 @@ python main.py
    - Build: `pip install -r requirements.txt`
    - Start: `python main.py`
    - Health check path: `/health`
-3. Set the `BOT_TOKEN` env var (mark as secret). `GROUP_ID` / `ADMIN_ID` are
+3. Set the `BOT_TOKEN` env var (mark as secret). The Blueprint creates the
+   session database and injects `RESULT_DATABASE_URL`; `GROUP_ID` / `ADMIN_ID` are
    pre-filled in `render.yaml` — adjust if needed.
 4. Deploy. The bot messages the admin when it comes online.
+
+> `LIFETIME_DB_PATH` is local SQLite storage. Render's free filesystem is
+> ephemeral, so retaining lifetime hits across redeploys requires a persistent
+> disk and setting this path to that mounted location.
 
 ### ⚠️ Staying awake on the free tier (important)
 
@@ -122,6 +139,9 @@ telegram-proxy-bot/
 ├── config.py       # env config
 ├── parser.py       # messy-input proxy extraction
 ├── checker.py      # async checking, classification, ranking
+├── delivery.py     # grouped Telegram document albums
+├── lifetime_store.py # SQLite lifetime working proxies
+├── daily_scheduler.py # 9 PM lifetime recheck task
 ├── formatting.py   # Telegram message builders
 ├── handlers.py     # commands + proxy-check flow
 ├── admin.py        # inline-keyboard admin panel
