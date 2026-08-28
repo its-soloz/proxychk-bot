@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from checker import CheckResult, Protocol, group_and_rank
 import daily_scheduler
 from delivery import build_logs_album, send_logs_album
+import handlers
 from lifetime_store import LifetimeProxyStore
 from parser import ParsedProxy
 
@@ -40,6 +41,18 @@ class FakeAlbumBot:
 
     async def send_media_group(self, **kwargs):
         self.calls.append(kwargs)
+
+
+class FakeReplyMessage:
+    def __init__(self) -> None:
+        self.documents: list[dict] = []
+        self.texts: list[str] = []
+
+    async def reply_document(self, **kwargs):
+        self.documents.append(kwargs)
+
+    async def reply_text(self, text, **kwargs):
+        self.texts.append(text)
 
 
 class LifetimeLogsTests(unittest.IsolatedAsyncioTestCase):
@@ -208,6 +221,55 @@ class LifetimeLogsTests(unittest.IsolatedAsyncioTestCase):
                 daily_scheduler.seconds_until_next_run(now),
                 30 * 60,
             )
+
+    async def test_admin_can_download_lifetime_export(self):
+        message = FakeReplyMessage()
+        update = type(
+            "Update",
+            (),
+            {
+                "effective_user": type("User", (), {"id": 501})(),
+                "effective_message": message,
+            },
+        )()
+        with (
+            patch.object(handlers.config, "ADMIN_ID", 501),
+            patch.object(
+                handlers.lifetime_store,
+                "export_lines",
+                return_value=["http://alice:secret@192.0.2.1:8080", "socks5://192.0.2.2:1080"],
+            ),
+        ):
+            await handlers.cmd_lifetime(update, None)
+
+        self.assertEqual(len(message.documents), 1)
+        document = message.documents[0]
+        self.assertEqual(document["filename"], "lifetime_working_proxies_2.txt")
+        self.assertIn("Unique proxies: <b>2</b>", document["caption"])
+        self.assertEqual(
+            document["document"].getvalue().decode("utf-8"),
+            "http://alice:secret@192.0.2.1:8080\nsocks5://192.0.2.2:1080\n",
+        )
+
+    async def test_non_admin_cannot_download_lifetime_export(self):
+        message = FakeReplyMessage()
+        update = type(
+            "Update",
+            (),
+            {
+                "effective_user": type("User", (), {"id": 99})(),
+                "effective_message": message,
+            },
+        )()
+        with (
+            patch.object(handlers.config, "ADMIN_ID", 501),
+            patch.object(handlers.lifetime_store, "export_lines") as export,
+        ):
+            await handlers.cmd_lifetime(update, None)
+
+        self.assertFalse(message.documents)
+        self.assertFalse(message.texts)
+        export.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -22,6 +22,15 @@ def proxy_key(proxy: ParsedProxy) -> str:
     )
 
 
+def proxy_line(proxy: ParsedProxy) -> str:
+    """Format a saved proxy using the protocol detected on its last check."""
+    scheme = proxy.scheme_hint or "http"
+    credentials = ""
+    if proxy.username and proxy.password:
+        credentials = f"{proxy.username}:{proxy.password}@"
+    return f"{scheme}://{credentials}{proxy.host}:{proxy.port}"
+
+
 class LifetimeProxyStore:
     def __init__(self, path: str) -> None:
         self.path = path
@@ -115,6 +124,10 @@ class LifetimeProxyStore:
             )
             for host, port, username, password, protocol in rows
         ]
+
+    def export_lines(self) -> list[str]:
+        """Return the current lifetime set in downloadable proxy-list format."""
+        return [proxy_line(proxy) for proxy in self.load_all()]
 
     def reconcile(
         self,

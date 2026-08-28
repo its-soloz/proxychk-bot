@@ -556,6 +556,7 @@ WELCOME = (
     "• Paste proxies or send a .txt / .json file\n"
     "• Browse category buttons, fastest first\n"
     "• Live proxies get forwarded automatically\n\n"
+    "Admin: use /lifetime to download the saved lifetime list.\n\n"
     "No limits. No cooldown. ⚡"
 )
 
@@ -573,6 +574,39 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_addproxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Accept /addproxy followed by any supported proxy text format."""
     await handle_message(update, context)
+
+
+async def cmd_lifetime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the current lifetime-hit list to the administrator."""
+    user = update.effective_user
+    if not user or not admin.is_admin(user.id):
+        return
+    try:
+        lines = await asyncio.to_thread(lifetime_store.export_lines)
+    except Exception as error:
+        logger.warning("Could not read lifetime proxies: %s", error)
+        await update.effective_message.reply_text(
+            "Could not read the lifetime proxy database right now."
+        )
+        return
+    if not lines:
+        await update.effective_message.reply_text(
+            "No lifetime working proxies have been recorded yet."
+        )
+        return
+
+    filename = f"lifetime_working_proxies_{len(lines)}.txt"
+    document = io.BytesIO(("\n".join(lines) + "\n").encode("utf-8"))
+    document.name = filename
+    await update.effective_message.reply_document(
+        document=document,
+        filename=filename,
+        caption=(
+            "🗃 <b>Lifetime working proxies</b>\n"
+            f"✅ Unique proxies: <b>{len(lines)}</b>"
+        ),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

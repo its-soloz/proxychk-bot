@@ -26,6 +26,8 @@ them, then forwards the live ones to your group and to the admin.
   `all_working_proxies.txt` in one Telegram document album.
 - **Lifetime hits** — unique working proxies are stored in local SQLite after a
   completed delivery, then rechecked and trimmed daily at 9:00 PM Delhi time.
+- **Admin lifetime export** — the admin can send `/lifetime` to download the
+  current saved lifetime list as `lifetime_working_proxies_<count>.txt`.
 - **Advanced admin panel** (`/admin`) — inline-keyboard control: stats, user
   leaderboard, toggle forwarding (group / admin / residential-only), broadcast
   to all users, ban/unban, and live health.
