@@ -47,7 +47,7 @@ async def run_daily_lifetime_recheck(bot) -> tuple[int, int]:
         snapshot_started_at=snapshot_started_at,
     )
 
-    if working and config.GROUP_ID:
+    if config.GROUP_ID:
         try:
             await send_logs_album(
                 bot,
@@ -57,6 +57,7 @@ async def run_daily_lifetime_recheck(bot) -> tuple[int, int]:
                 working,
                 groups,
                 daily=True,
+                checked=results,
             )
         except Exception as error:
             logger.warning("Could not send daily lifetime proxy album: %s", error)

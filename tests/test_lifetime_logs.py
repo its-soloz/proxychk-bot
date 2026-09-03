@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -118,6 +119,49 @@ class LifetimeLogsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.calls[0]["chat_id"], -100123)
         self.assertEqual(len(bot.calls[0]["media"]), len(album))
 
+    def test_complete_logs_preserve_credentials_and_include_dead_proxies(self):
+        live_proxy = ParsedProxy(
+            "192.0.2.10",
+            8080,
+            username="alice",
+            password="secret",
+            scheme_hint="http",
+            raw="192.0.2.10:8080:alice:secret",
+        )
+        dead_proxy = ParsedProxy(
+            "192.0.2.11",
+            1080,
+            username="bob",
+            password="hidden",
+            scheme_hint="socks5",
+            raw="socks5://bob:hidden@192.0.2.11:1080",
+        )
+        live = CheckResult(
+            proxy=live_proxy,
+            working=True,
+            protocol=Protocol.HTTP,
+            latency_ms=20,
+        )
+        dead = CheckResult(proxy=dead_proxy, error="TimeoutError")
+        groups, ranked = group_and_rank([live, dead])
+
+        album = build_logs_album(
+            "Alice",
+            2,
+            ranked,
+            groups,
+            checked=[live, dead],
+        )
+
+        self.assertEqual(album[-1].media.filename, "all_checked_proxies.txt")
+        self.assertEqual(
+            album[-1].media.input_file_content.decode("utf-8").splitlines(),
+            [
+                "192.0.2.10:8080:alice:secret",
+                "socks5://bob:hidden@192.0.2.11:1080",
+            ],
+        )
+
     def test_sqlite_bulk_insert_deduplicates_and_reconcile_trims_dead(self):
         first = working_result("192.0.2.1", Protocol.HTTP, 50)
         second = working_result("192.0.2.2", Protocol.SOCKS5, 60)
@@ -136,11 +180,46 @@ class LifetimeLogsTests(unittest.IsolatedAsyncioTestCase):
             [CheckResult(proxy=checked[0]), survivor],
             timestamp=3000,
         )
-        self.assertEqual((kept, removed), (1, 1))
+        self.assertEqual((kept, removed), (1, 0))
         loaded = self.store.load_all()
-        self.assertEqual(len(loaded), 1)
-        self.assertEqual(loaded[0].host, "192.0.2.2")
-        self.assertEqual(loaded[0].scheme_hint, "socks4")
+        self.assertEqual(len(loaded), 2)
+        self.assertEqual(loaded[1].host, "192.0.2.2")
+        self.assertEqual(loaded[1].scheme_hint, "socks4")
+
+    def test_sqlite_saves_dead_proxy_original_text_and_credentials(self):
+        proxy = ParsedProxy(
+            "proxy.example.com",
+            9000,
+            username="customer",
+            password="password123",
+            scheme_hint="socks5",
+            raw="proxy.example.com:9000:customer:password123",
+        )
+        dead = CheckResult(proxy=proxy, error="TimeoutError")
+
+        self.assertEqual(self.store.add_working([dead], timestamp=1000), 1)
+        self.assertEqual(
+            self.store.export_lines(),
+            ["proxy.example.com:9000:customer:password123"],
+        )
+
+        with sqlite3.connect(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT username, password, proxy_text, working, last_error
+                FROM lifetime_proxies
+                """
+            ).fetchone()
+        self.assertEqual(
+            row,
+            (
+                "customer",
+                "password123",
+                "proxy.example.com:9000:customer:password123",
+                0,
+                "TimeoutError",
+            ),
+        )
 
     def test_daily_snapshot_cannot_delete_a_newer_user_confirmation(self):
         live = working_result("192.0.2.10", Protocol.HTTP, 50)
@@ -158,6 +237,11 @@ class LifetimeLogsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((kept, removed), (0, 0))
         self.assertEqual(self.store.count(), 1)
+        with sqlite3.connect(self.db_path) as connection:
+            status = connection.execute(
+                "SELECT working, last_checked FROM lifetime_proxies"
+            ).fetchone()
+        self.assertEqual(status, (1, 2000.0))
 
     async def test_daily_job_rechecks_reconciles_and_sends_same_album(self):
         proxies = [

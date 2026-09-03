@@ -101,5 +101,5 @@ def build_forward_summary(working: list[CheckResult], source: str) -> str | None
 
 
 def build_txt_export(working: list[CheckResult]) -> str:
-    """Plain text file body — one proxy per line, best ping first."""
-    return "\n".join(r.as_line() for r in working)
+    """Plain text file body — preserve each proxy's supplied representation."""
+    return "\n".join(r.as_input_line() for r in working)

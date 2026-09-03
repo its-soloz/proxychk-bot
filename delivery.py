@@ -54,9 +54,10 @@ def build_logs_album(
     groups: dict[str, list[CheckResult]],
     *,
     daily: bool = False,
+    checked: list[CheckResult] | None = None,
 ) -> list[InputMediaDocument]:
-    """Build one Telegram album containing category files and a combined file."""
-    if not working:
+    """Build an album with live categories plus the complete checked input."""
+    if not working and not checked:
         return []
 
     files: list[tuple[str, list[CheckResult]]] = [
@@ -64,7 +65,10 @@ def build_logs_album(
         for category, filename, _ in EXPORT_CATEGORIES
         if groups.get(category)
     ]
-    files.append(("all_working_proxies.txt", working))
+    if working:
+        files.append(("all_working_proxies.txt", working))
+    if checked:
+        files.append(("all_checked_proxies.txt", checked))
 
     caption = build_logs_caption(
         source_name,
@@ -97,6 +101,7 @@ async def send_logs_album(
     groups: dict[str, list[CheckResult]],
     *,
     daily: bool = False,
+    checked: list[CheckResult] | None = None,
 ) -> bool:
     """Send all result files in one sendMediaGroup request."""
     album = build_logs_album(
@@ -105,6 +110,7 @@ async def send_logs_album(
         working,
         groups,
         daily=daily,
+        checked=checked,
     )
     if not album:
         return False

@@ -69,6 +69,10 @@ class CheckResult:
             return f"{scheme}://{p.username}:{p.password}@{p.host}:{p.port}"
         return f"{scheme}://{p.host}:{p.port}"
 
+    def as_input_line(self) -> str:
+        """The proxy exactly as supplied, including credentials."""
+        return self.proxy.input_line
+
 
 def _connector_for(proto: Protocol, p: ParsedProxy) -> aiohttp.BaseConnector:
     if proto is Protocol.HTTP:

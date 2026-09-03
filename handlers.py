@@ -113,6 +113,7 @@ def _deserialize_check_result(data: object) -> CheckResult:
             username=optional_string(proxy_data.get("username")),
             password=optional_string(proxy_data.get("password")),
             scheme_hint=optional_string(proxy_data.get("scheme_hint")),
+            raw=optional_string(proxy_data.get("raw")),
         ),
         working=bool(data.get("working")),
         protocol=Protocol(protocol_value) if protocol_value else None,
@@ -747,23 +748,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             reply_markup=result_markup,
         )
 
-    if not working:
-        return
+    # Persist every parsed proxy, including failed checks and credentials. This
+    # is independent of Telegram delivery so a temporary logs failure cannot
+    # lose the check history.
+    try:
+        await asyncio.to_thread(lifetime_store.add_working, results)
+    except Exception as error:
+        logger.warning("Could not save proxy check batch: %s", error)
 
-    # Deliver logs first, then persist the completed working batch in one
-    # SQLite transaction (never one write per proxy).
+    # The logs album contains the complete checked batch; admin forwarding keeps
+    # its existing live-only filters.
     logs_delivered = await _forward_live(
         context,
         working,
         user.full_name,
         origin_chat_id=chat_id,
         total_checked=len(proxies),
+        checked=results,
     )
-    if logs_delivered:
-        try:
-            await asyncio.to_thread(lifetime_store.add_working, working)
-        except Exception as error:
-            logger.warning("Could not save lifetime working proxies: %s", error)
 
 
 async def handle_result_callback(
@@ -887,6 +889,7 @@ async def _forward_live(
     source_name: str,
     origin_chat_id: int,
     total_checked: int,
+    checked=None,
 ) -> bool:
     settings = store.settings
     full_groups, full_ranked = group_and_rank(working)
@@ -903,6 +906,7 @@ async def _forward_live(
                 total_checked,
                 full_ranked,
                 full_groups,
+                checked=checked,
             )
         except Exception as error:
             logs_delivered = False

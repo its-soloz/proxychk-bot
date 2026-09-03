@@ -21,11 +21,13 @@ them, then forwards the live ones to your group and to the admin.
 - **Restart-safe result menus** — recent inline-button sessions are kept in
   Render Postgres for 30 minutes, so a web-service restart does not break them.
 - **Auto-forwarding** — live proxies pushed to your group and admin DM.
-- **Single-message logs albums** — the logs group receives named residential,
+- **Complete check logs** — the logs group receives named residential,
   datacenter, HTTP, SOCKS4, SOCKS5, and rotating files plus
-  `all_working_proxies.txt` in one Telegram document album.
-- **Lifetime hits** — unique working proxies are stored in local SQLite after a
-  completed delivery, then rechecked and trimmed daily at 9:00 PM Delhi time.
+  `all_working_proxies.txt` and `all_checked_proxies.txt` in one Telegram
+  document album. Proxy credentials are retained in these files.
+- **Lifetime proxy database** — every parsed proxy, including failed checks, is
+  stored in local SQLite with its username, password, original proxy text, and
+  latest check status. Records are rechecked daily at 9:00 PM Delhi time.
 - **Admin lifetime export** — the admin can send `/lifetime` to download the
   current saved lifetime list as `lifetime_working_proxies_<count>.txt`.
 - **Advanced admin panel** (`/admin`) — inline-keyboard control: stats, user
@@ -54,7 +56,7 @@ All config is via environment variables (see `.env.example`):
 | `RESULT_DATABASE_URL` | Render | — | injected by the Blueprint for result sessions |
 | `GROUP_ID` | ✅ | `-1004358364327` | forward target group |
 | `ADMIN_ID` | ✅ | `5010778910` | admin user id |
-| `LIFETIME_DB_PATH` | | `lifetime_proxies.sqlite3` | local SQLite lifetime-hit database |
+| `LIFETIME_DB_PATH` | | `lifetime_proxies.sqlite3` | local SQLite proxy database |
 | `DAILY_LOG_HOUR` | | `21` | daily recheck hour (24-hour clock) |
 | `DAILY_LOG_MINUTE` | | `0` | daily recheck minute |
 | `DAILY_LOG_TIMEZONE` | | `Asia/Kolkata` | IANA timezone for the daily run |

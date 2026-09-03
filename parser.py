@@ -52,6 +52,7 @@ class ParsedProxy:
     username: str | None = None
     password: str | None = None
     scheme_hint: str | None = None  # normalised protocol family if user provided one
+    raw: str | None = None  # original proxy token when it came from text input
 
     @property
     def address(self) -> str:
@@ -61,6 +62,17 @@ class ParsedProxy:
     def key(self) -> str:
         """Dedup key — proxy is the same regardless of the scheme the user typed."""
         return f"{self.host}:{self.port}:{self.username or ''}:{self.password or ''}"
+
+    @property
+    def input_line(self) -> str:
+        """Return the proxy in its original form, including authentication."""
+        if self.raw:
+            return self.raw.strip()
+        scheme = f"{self.scheme_hint}://" if self.scheme_hint else ""
+        credentials = ""
+        if self.username is not None or self.password is not None:
+            credentials = f"{self.username or ''}:{self.password or ''}@"
+        return f"{scheme}{credentials}{self.host}:{self.port}"
 
 
 def _valid_port(port: str) -> bool:
@@ -156,6 +168,7 @@ def parse_proxies(text: str) -> list[ParsedProxy]:
                     username=gd.get("user"),
                     password=gd.get("pw"),
                     scheme_hint=_norm_scheme(gd.get("scheme")),
+                    raw=m.group(0),
                 )
             )
             consumed.append((m.start(), m.end()))

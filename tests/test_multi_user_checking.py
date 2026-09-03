@@ -29,6 +29,10 @@ class MultiUserCheckingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(proxies[0].port, 42418)
         self.assertEqual(proxies[0].username, "pOBJOO0hIXndyTS")
         self.assertEqual(proxies[0].password, "y7eysZ1TFpg0WiX")
+        self.assertEqual(
+            proxies[0].input_line,
+            "74.122.59.184:42418:pOBJOO0hIXndyTS:y7eysZ1TFpg0WiX",
+        )
 
     async def test_addproxy_command_uses_the_normal_check_flow(self):
         update = SimpleNamespace()

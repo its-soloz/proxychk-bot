@@ -1,4 +1,4 @@
-"""Batched SQLite persistence for unique lifetime working proxies."""
+"""Batched SQLite persistence for every checked proxy and its credentials."""
 from __future__ import annotations
 
 from contextlib import closing
@@ -23,12 +23,8 @@ def proxy_key(proxy: ParsedProxy) -> str:
 
 
 def proxy_line(proxy: ParsedProxy) -> str:
-    """Format a saved proxy using the protocol detected on its last check."""
-    scheme = proxy.scheme_hint or "http"
-    credentials = ""
-    if proxy.username and proxy.password:
-        credentials = f"{proxy.username}:{proxy.password}@"
-    return f"{scheme}://{credentials}{proxy.host}:{proxy.port}"
+    """Return a saved proxy in the representation supplied by the user."""
+    return proxy.input_line
 
 
 class LifetimeProxyStore:
@@ -49,18 +45,38 @@ class LifetimeProxyStore:
                 port INTEGER NOT NULL,
                 username TEXT,
                 password TEXT,
-                protocol TEXT NOT NULL,
+                protocol TEXT NOT NULL DEFAULT '',
+                scheme_hint TEXT,
+                proxy_text TEXT,
+                working INTEGER NOT NULL DEFAULT 1,
+                last_error TEXT,
                 first_seen REAL NOT NULL,
                 last_checked REAL NOT NULL
             )
             """
         )
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(lifetime_proxies)")
+        }
+        migrations = {
+            "scheme_hint": "ALTER TABLE lifetime_proxies ADD COLUMN scheme_hint TEXT",
+            "proxy_text": "ALTER TABLE lifetime_proxies ADD COLUMN proxy_text TEXT",
+            "working": (
+                "ALTER TABLE lifetime_proxies "
+                "ADD COLUMN working INTEGER NOT NULL DEFAULT 1"
+            ),
+            "last_error": "ALTER TABLE lifetime_proxies ADD COLUMN last_error TEXT",
+        }
+        for name, statement in migrations.items():
+            if name not in columns:
+                connection.execute(statement)
         return connection
 
     def add_working(
         self, results: list[CheckResult], *, timestamp: float | None = None
     ) -> int:
-        """Upsert a completed batch once while keeping one row per proxy."""
+        """Upsert every completed check while keeping one row per proxy identity."""
         now = time.time() if timestamp is None else timestamp
         rows_by_key = {
             proxy_key(result.proxy): (
@@ -69,12 +85,15 @@ class LifetimeProxyStore:
                 result.proxy.port,
                 result.proxy.username,
                 result.proxy.password,
-                result.protocol.value,
+                result.protocol.value if result.protocol is not None else "",
+                result.proxy.scheme_hint,
+                result.proxy.input_line,
+                int(result.working),
+                result.error,
                 now,
                 now,
             )
             for result in results
-            if result.working and result.protocol is not None
         }
         rows = list(rows_by_key.values())
         if not rows:
@@ -89,10 +108,15 @@ class LifetimeProxyStore:
                 """
                 INSERT INTO lifetime_proxies (
                     proxy_key, host, port, username, password, protocol,
+                    scheme_hint, proxy_text, working, last_error,
                     first_seen, last_checked
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(proxy_key) DO UPDATE SET
+                    scheme_hint = excluded.scheme_hint,
+                    proxy_text = excluded.proxy_text,
                     protocol = excluded.protocol,
+                    working = excluded.working,
+                    last_error = excluded.last_error,
                     last_checked = excluded.last_checked
                 """,
                 rows,
@@ -109,7 +133,8 @@ class LifetimeProxyStore:
         with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 """
-                SELECT host, port, username, password, protocol
+                SELECT host, port, username, password, protocol, scheme_hint,
+                       proxy_text
                 FROM lifetime_proxies
                 ORDER BY first_seen, proxy_key
                 """
@@ -120,9 +145,10 @@ class LifetimeProxyStore:
                 port=port,
                 username=username,
                 password=password,
-                scheme_hint=protocol,
+                scheme_hint=scheme_hint or protocol or None,
+                raw=proxy_text,
             )
-            for host, port, username, password, protocol in rows
+            for host, port, username, password, protocol, scheme_hint, proxy_text in rows
         ]
 
     def export_lines(self) -> list[str]:
@@ -137,44 +163,35 @@ class LifetimeProxyStore:
         timestamp: float | None = None,
         snapshot_started_at: float | None = None,
     ) -> tuple[int, int]:
-        """Refresh survivors and safely delete failures from this snapshot only."""
+        """Refresh every row from this snapshot without deleting failed proxies."""
         now = time.time() if timestamp is None else timestamp
         snapshot_started_at = (
             now if snapshot_started_at is None else snapshot_started_at
         )
-        survivor_rows = [
-            (result.protocol.value, now, proxy_key(result.proxy))
+        result_rows = [
+            (
+                result.protocol.value if result.protocol is not None else "",
+                int(result.working),
+                result.error,
+                result.proxy.scheme_hint,
+                result.proxy.input_line,
+                now,
+                proxy_key(result.proxy),
+            )
             for result in results
-            if result.working and result.protocol is not None
-        ]
-        survivor_keys = {row[2] for row in survivor_rows}
-        failed_keys = [
-            proxy_key(proxy)
-            for proxy in checked
-            if proxy_key(proxy) not in survivor_keys
         ]
         with self._lock, closing(self._connect()) as connection, connection:
-            if survivor_rows:
+            if result_rows:
                 connection.executemany(
                     """
                     UPDATE lifetime_proxies
-                    SET protocol = ?, last_checked = ?
-                    WHERE proxy_key = ?
-                    """,
-                    survivor_rows,
-                )
-            if failed_keys:
-                delete_cursor = connection.executemany(
-                    """
-                    DELETE FROM lifetime_proxies
+                    SET protocol = ?, working = ?, last_error = ?,
+                        scheme_hint = ?, proxy_text = ?, last_checked = ?
                     WHERE proxy_key = ? AND last_checked <= ?
                     """,
-                    ((key, snapshot_started_at) for key in failed_keys),
+                    (row + (snapshot_started_at,) for row in result_rows),
                 )
-                removed = max(0, delete_cursor.rowcount)
-            else:
-                removed = 0
-        return len(survivor_rows), removed
+        return sum(1 for result in results if result.working), 0
 
     def count(self) -> int:
         with self._lock, closing(self._connect()) as connection, connection:
